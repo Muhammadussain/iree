@@ -105,18 +105,18 @@ iree_uk_mmt4d_tile_s8s8s32_12xXXx8_to_48xXXx32_riscv_64_xsmtvdot(
 
     __asm__ volatile(
         "    vsetvli     x0, %[vl], e8, m1, ta, ma  \n\t"
-        "    smt.vmadot  %[c0],  %[a0], %[b0]       \n\t"
-        "    smt.vmadot  %[c1],  %[a0], %[b1]       \n\t"
-        "    smt.vmadot  %[c2],  %[a0], %[b2]       \n\t"
-        "    smt.vmadot  %[c3],  %[a0], %[b3]       \n\t"
-        "    smt.vmadot  %[c4],  %[a1], %[b0]       \n\t"
-        "    smt.vmadot  %[c5],  %[a1], %[b1]       \n\t"
-        "    smt.vmadot  %[c6],  %[a1], %[b2]       \n\t"
-        "    smt.vmadot  %[c7],  %[a1], %[b3]       \n\t"
-        "    smt.vmadot  %[c8],  %[a2], %[b0]       \n\t"
-        "    smt.vmadot  %[c9],  %[a2], %[b1]       \n\t"
-        "    smt.vmadot  %[c10], %[a2], %[b2]       \n\t"
-        "    smt.vmadot  %[c11], %[a2], %[b3]       \n\t"
+        "    smt.vmadotus  %[c0],  %[a0], %[b0]       \n\t"
+        "    smt.vmadotus  %[c1],  %[a0], %[b1]       \n\t"
+        "    smt.vmadotus  %[c2],  %[a0], %[b2]       \n\t"
+        "    smt.vmadotus  %[c3],  %[a0], %[b3]       \n\t"
+        "    smt.vmadotus  %[c4],  %[a1], %[b0]       \n\t"
+        "    smt.vmadotus  %[c5],  %[a1], %[b1]       \n\t"
+        "    smt.vmadotus  %[c6],  %[a1], %[b2]       \n\t"
+        "    smt.vmadotus  %[c7],  %[a1], %[b3]       \n\t"
+        "    smt.vmadotus  %[c8],  %[a2], %[b0]       \n\t"
+        "    smt.vmadotus  %[c9],  %[a2], %[b1]       \n\t"
+        "    smt.vmadotus  %[c10], %[a2], %[b2]       \n\t"
+        "    smt.vmadotus  %[c11], %[a2], %[b3]       \n\t"
         : [c0] "+vr"(acc0), [c1] "+vr"(acc1), [c2] "+vr"(acc2),
           [c3] "+vr"(acc3), [c4] "+vr"(acc4), [c5] "+vr"(acc5),
           [c6] "+vr"(acc6), [c7] "+vr"(acc7), [c8] "+vr"(acc8),
@@ -152,3 +152,4 @@ IREE_UK_MMT4D_TILE_FUNC_IMPL_FOR_M0(
 IREE_UK_MMT4D_TILE_FUNC_IMPL_FOR_M0(
     iree_uk_mmt4d_tile_s8s8s32_12xXXx8_to_48xXXx32_riscv_64_xsmtvdot,
     iree_uk_mmt4d_tile_s8s8s32_48xXXx32_riscv_64_xsmtvdot_zvl4096b, 48)
+

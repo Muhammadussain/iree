@@ -61,6 +61,7 @@ detail::MatchContractionResult
 isScaledContractionImpl(Operation *op,
                         ScaledContractionDimensions *dimensions = nullptr);
 
+
 } // namespace  mlir::iree_compiler::IREE::LinalgExt
 
 #endif // IREE_COMPILER_DIALECT_LINALGEXT_UTILS_MATCHUTILS_H_

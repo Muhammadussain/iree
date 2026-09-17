@@ -1,11 +1,13 @@
+
 // Copyright 2025 The IREE Authors
 //
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "iree/compiler/Dialect/LinalgExt/Utils/MatchUtils.h"
-
+#include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SmallBitVector.h"
@@ -311,5 +313,4 @@ bool isaScaledContractionOpInterface(linalg::LinalgOp linalgOp) {
   Operation *op = linalgOp.getOperation();
   return isScaledContractionImpl(op) == detail::MatchContractionResult::Success;
 }
-
 }; // namespace mlir::iree_compiler::IREE::LinalgExt

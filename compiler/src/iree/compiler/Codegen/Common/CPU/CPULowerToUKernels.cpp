@@ -16,6 +16,7 @@
 #include "iree/compiler/Dialect/Encoding/IR/EncodingOps.h"
 #include "iree/compiler/Dialect/Encoding/IR/EncodingTypes.h"
 #include "iree/compiler/Dialect/Encoding/Utils/Utils.h"
+#include "iree/compiler/Dialect/LinalgExt/Utils/MatchUtils.h"
 #include "llvm/ADT/Repeated.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -717,6 +718,10 @@ matchDAGForUKernel(RewriterBase &rewriter, IREE::Codegen::QueryTileSizesOp op,
       genericMicroKernelOp.getOperation());
 }
 
+
+// =============================================================================
+// Main pass ()
+// =============================================================================
 namespace {
 
 using TargetPredicate = std::function<bool(IREE::HAL::ExecutableTargetAttr)>;
@@ -773,6 +778,8 @@ void CPULowerToUKernelsPass::runOnOperation() {
                   LowerToUKernelPattern<linalg::UnPackOp>,
                   LowerToUKernelPattern<linalg::GenericOp>>(
       context, allTargets, skipIntermediateRoundings);
+
+
   // These patterns are inherently specific to the VMVX backend.
   patterns.insert<LowerToUKernelPattern<IREE::Codegen::QueryTileSizesOp>>(
       context, isVMVXBackend);
