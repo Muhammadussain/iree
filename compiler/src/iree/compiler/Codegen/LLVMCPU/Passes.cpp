@@ -3,7 +3,7 @@
 // Licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-
+#include "mlir/Dialect/RISCVIME/Transforms/Passes.h"
 #include "iree/compiler/Codegen/Common/CPU/Passes.h"
 #include "iree/compiler/Codegen/Common/PassUtils.h"
 #include "iree/compiler/Codegen/Common/Passes.h"
@@ -92,6 +92,15 @@ addTileAndDistributePasses(OpPassManager &funcPassManager,
 void buildLLVMCPUVectorLoweringPipeline(
     OpPassManager &funcPassManager,
     const LLVMCPUVectorLoweringPassOptions &options) {
+
+  // ===== ADD THIS BLOCK =====
+  // RISCVIME: unconditionally add our passes. Each pass checks +xsmtvdot
+  // internally (via HAL::ExecutableTargetAttr::lookup on the function).
+  funcPassManager.addPass(
+      mlir::riscv_ime::createLowerContractionToRISCVIMEPass());
+  funcPassManager.addPass(
+      mlir::riscv_ime::createLegalizeForLLVMExportPass());
+  // ===== END =====
   funcPassManager.addPass(createDropVectorUnitDimsPass());
   // Wrap reshape ops around `inner_tiled` in `HoistableConversionOp` pairs
   // so they can hoist/cancel out of K-reduction loops; otherwise they

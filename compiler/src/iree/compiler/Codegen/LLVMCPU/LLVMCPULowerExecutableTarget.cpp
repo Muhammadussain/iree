@@ -25,7 +25,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
-
+#include "mlir/Dialect/RISCVIME/Transforms/Passes.h"
 #define DEBUG_TYPE "kernel-dispatch"
 
 using mlir::iree_compiler::IREE::Codegen::LoweringConfigAttrInterface;

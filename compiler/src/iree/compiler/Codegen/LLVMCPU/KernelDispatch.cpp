@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "iree/compiler/Codegen/LLVMCPU/KernelDispatch.h"
-
+#include "mlir/Dialect/Func/IR/FuncOps.h"    // ← ADD
 #include "iree/compiler/Codegen/Common/TileAndFuseUtils.h"
 #include "iree/compiler/Codegen/Dialect/CPU/IR/IREECPUTypes.h"
 #include "iree/compiler/Codegen/Dialect/Codegen/IR/IREECodegenAttrs.h"
@@ -67,6 +67,26 @@
 namespace mlir::iree_compiler {
 
 using CPUPipeline = IREE::CPU::LoweringPipeline;
+
+
+static bool hasXSMTVdot(mlir::FunctionOpInterface entryPointFn) {
+  auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(entryPointFn);
+  if (!targetAttr) {
+    llvm::errs() << "[XSMTVdot] no targetAttr\n";
+    return false;
+  }
+  auto features = targetAttr.getConfiguration().get("cpu_features");
+  if (!features) {
+    llvm::errs() << "[XSMTVdot] no cpu_features\n";
+    return false;
+  }
+  auto str = dyn_cast<StringAttr>(features);
+  bool result = str && str.getValue().contains("+xsmtvdot");
+  llvm::errs() << "[XSMTVdot] features=\"" << str.getValue() 
+               << "\" contains=" << result << "\n";
+  return result;
+}
+
 
 /// Helper to build a TranslationInfoAttr with a CPU pipeline.
 static IREE::Codegen::TranslationInfoAttr
@@ -1614,6 +1634,53 @@ setContractionRootConfig(mlir::FunctionOpInterface entryPointFn,
   assert(meetLegacyContractionOpInterface(linalgOp) &&
          "expected to have exactly one reduction dim, and it is the innermost "
          "dim");
+
+         // ===== ADD THIS BLOCK =====
+  // RISCVIME (SpacemiT IME) path: if +xsmtvdot is enabled and the operation is
+  // s8 x s8 -> s32, use the IME atom tile sizes {4, 4, 8}.
+  auto targetAttrEarly =
+      IREE::HAL::ExecutableTargetAttr::lookup(entryPointFn);
+  if (targetAttrEarly) {
+    auto lhsTy = cast<ShapedType>(
+        linalgOp.getDpsInputOperand(0)->get().getType());
+    auto rhsTy = cast<ShapedType>(
+        linalgOp.getDpsInputOperand(1)->get().getType());
+    auto resTy = cast<ShapedType>(
+        linalgOp.getDpsInitOperand(0)->get().getType());
+
+    // Only enable when the target is RISC-V with +xsmtvdot and operands are i8/i8->i32.
+    if (hasXSMTVdot(entryPointFn) &&
+        lhsTy.getElementType().isInteger(8) &&
+        rhsTy.getElementType().isInteger(8) &&
+        resTy.getElementType().isInteger(32)) {
+      unsigned numLoops = linalgOp.getNumLoops();
+
+      // Distribution tile sizes: leave defaults, but add vector tile sizes
+      // that match the IME atom 4x4x8.
+      SmallVector<int64_t> distTileSizes(numLoops, clDefaultDistTileSize);
+
+      // Last 3 dims are (M, N, K) for a contraction.
+      SmallVector<int64_t> vecTileSizes(numLoops, 1);
+      vecTileSizes[numLoops - 3] = 4;   // M0 = 4
+      vecTileSizes[numLoops - 2] = 4;   // N0 = 4
+      vecTileSizes[numLoops - 1] = 8;   // K0 = 8
+
+      LDBG() << "[RISCVIME] Using IME atom tile sizes {4, 4, 8}";
+
+      LoweringConfigGenerator generator(linalgOp);
+      generator.setDistributionTileSizes(distTileSizes);
+      generator.setVectorTileSizes(vecTileSizes);
+      IREE::CPU::LoweringConfigAttr loweringConfig =
+          generator.generateCPULoweringConfig();
+
+      return setOpConfigAndEntryPointFnTranslation(
+          entryPointFn, linalgOp, loweringConfig,
+          getCPUTranslationInfo(linalgOp.getContext(),
+                                CPUPipeline::DoubleTilingExpert));
+    }
+  }
+  // ===== END OF ADDED BLOCK =====
+
   // Consider all element types and use the smallest vector size. The tiling
   // sizes are chosen based on the vector size.
   auto lhsShapedType =
