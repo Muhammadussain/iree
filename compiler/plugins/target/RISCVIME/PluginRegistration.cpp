@@ -2,7 +2,7 @@
 
 #include "iree/compiler/PluginAPI/Client.h"
 #include "mlir/Dialect/RISCVIME/RISCVIMEDialect.h"
-#include "mlir/Target/LLVMIR/Dialect/RISCVIME/RISCVIMEToLLVMIRTranslation.h"  // ← ADD
+#include "mlir/Target/LLVMIR/Dialect/RISCVIME/RISCVIMEToLLVMIRTranslation.h" 
 
 namespace mlir::iree_compiler {
 
@@ -13,10 +13,7 @@ struct RISCVIMESession
                     PluginActivationPolicy::DefaultActivated> {
   void registerDialects(DialectRegistry &registry) {
   registry.insert<riscv_ime::RISCVIMEDialect>();
-  // Also register the LLVM IR translation interface so that
-  // riscv_ime.intr.vmadotus can be lowered to @llvm.riscv.vmadotus
-  // during serialization.
-  riscv_ime::registerRISCVIMEDialectTranslation(registry);  // ← ADD
+  riscv_ime::registerRISCVIMEDialectTranslation(registry);  
 }
 };
 

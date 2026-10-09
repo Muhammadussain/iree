@@ -14,8 +14,8 @@ iree_cc_library(
     MLIRIR
     MLIRRISCVIMEDialect
     MLIRRISCVIMETransforms
-    MLIRRISCVIMEToLLVMIRTranslation     # ← ADD (naya)
-    MLIRTargetLLVMIRExport               # ← ADD (naya)
+    MLIRRISCVIMEToLLVMIRTranslation    
+    MLIRTargetLLVMIRExport               
     iree::compiler::PluginAPI          
   PUBLIC
 )
