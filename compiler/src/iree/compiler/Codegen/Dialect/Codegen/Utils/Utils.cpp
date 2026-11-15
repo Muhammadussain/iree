@@ -10,6 +10,7 @@
 #include "iree/compiler/Dialect/LinalgExt/Utils/MatchUtils.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/InterleavedRange.h"
+#include "llvm/ADT/SmallVector.h"           
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/IR/LinalgInterfaces.h"
@@ -749,6 +750,188 @@ bool isDataTiledConvGeneric(Operation *op) {
         return isa<arith::MulFOp>(mul) && isa<arith::AddFOp>(add);
       },
       llvm::nulls());
+}
+//===----------------------------------------------------------------------===//
+// Packed Q5_0 GEMM generic matcher.
+//===----------------------------------------------------------------------===//
+
+/// True if `v` is an integer constant equal to `c`.
+static bool isConst(Value v, int64_t c) {
+  std::optional<int64_t> value = getConstantIntValue(v);
+  return value && *value == c;
+}
+
+/// True if `v` = ExtOp(arg) (e.g. extf of the f16 block argument).
+template <typename ExtOp>
+static bool isExtOf(Value v, Value arg) {
+  auto ext = v.getDefiningOp<ExtOp>();
+  return ext && ext.getIn() == arg;
+}
+
+/// True if `v` = (kk) where kk = index_cast(linalg.index 5) : i32.
+static bool isKK(Value v) {
+  auto cast = v.getDefiningOp<arith::IndexCastOp>();
+  if (!cast || !cast.getType().isSignlessInteger(32)) {
+    return false;
+  }
+  auto index = cast.getIn().getDefiningOp<linalg::IndexOp>();
+  return index && index.getDim() == 5;
+}
+
+/// The body must compute (operands in exactly this order):
+///   nibble = (extui(qs) >> (((kk >> 4) & 1) * 4)) & 15
+///   hbitUp = ((extui(qh) >> (kk & 7)) & 1) << 4
+///   w      = sitofp((nibble | hbitUp) - 16) * extf(d)
+///   out'   = (extf(a) * w) + out
+static bool matchPackedQ5_0Body(Block &block) {
+  if (block.getNumArguments() != 5) {
+    return false;
+  }
+  Value a = block.getArgument(0);
+  Value d = block.getArgument(1);
+  Value qh = block.getArgument(2);
+  Value qs = block.getArgument(3);
+  Value out = block.getArgument(4);
+  auto yield = dyn_cast<linalg::YieldOp>(block.getTerminator());
+  if (!yield || yield.getNumOperands() != 1) {
+    return false;
+  }
+
+  // out' = (extf(a) * w) + out
+  auto add = yield.getOperand(0).getDefiningOp<arith::AddFOp>();
+  if (!add || add.getRhs() != out) {
+    return false;
+  }
+  auto mulAW = add.getLhs().getDefiningOp<arith::MulFOp>();
+  if (!mulAW || !isExtOf<arith::ExtFOp>(mulAW.getLhs(), a)) {
+    return false;
+  }
+  // w = sitofp(q - 16) * extf(d)
+  auto mulW = mulAW.getRhs().getDefiningOp<arith::MulFOp>();
+  if (!mulW || !isExtOf<arith::ExtFOp>(mulW.getRhs(), d)) {
+    return false;
+  }
+  auto toFp = mulW.getLhs().getDefiningOp<arith::SIToFPOp>();
+  if (!toFp) {
+    return false;
+  }
+  auto sub = toFp.getIn().getDefiningOp<arith::SubIOp>();
+  if (!sub || !isConst(sub.getRhs(), 16)) {
+    return false;
+  }
+  // q = nibble | hbitUp
+  auto orOp = sub.getLhs().getDefiningOp<arith::OrIOp>();
+  if (!orOp) {
+    return false;
+  }
+
+  // nibble = (extui(qs) >> shift) & 15
+  auto and15 = orOp.getLhs().getDefiningOp<arith::AndIOp>();
+  if (!and15 || !isConst(and15.getRhs(), 15)) {
+    return false;
+  }
+  auto qsShift = and15.getLhs().getDefiningOp<arith::ShRUIOp>();
+  if (!qsShift || !isExtOf<arith::ExtUIOp>(qsShift.getLhs(), qs)) {
+    return false;
+  }
+  // shift = ((kk >> 4) & 1) * 4
+  auto mul4 = qsShift.getRhs().getDefiningOp<arith::MulIOp>();
+  if (!mul4 || !isConst(mul4.getRhs(), 4)) {
+    return false;
+  }
+  auto and1 = mul4.getLhs().getDefiningOp<arith::AndIOp>();
+  if (!and1 || !isConst(and1.getRhs(), 1)) {
+    return false;
+  }
+  auto kkShr4 = and1.getLhs().getDefiningOp<arith::ShRUIOp>();
+  if (!kkShr4 || !isKK(kkShr4.getLhs()) || !isConst(kkShr4.getRhs(), 4)) {
+    return false;
+  }
+
+  // hbitUp = ((extui(qh) >> (kk & 7)) & 1) << 4
+  auto shl4 = orOp.getRhs().getDefiningOp<arith::ShLIOp>();
+  if (!shl4 || !isConst(shl4.getRhs(), 4)) {
+    return false;
+  }
+  auto hAnd1 = shl4.getLhs().getDefiningOp<arith::AndIOp>();
+  if (!hAnd1 || !isConst(hAnd1.getRhs(), 1)) {
+    return false;
+  }
+  auto qhShift = hAnd1.getLhs().getDefiningOp<arith::ShRUIOp>();
+  if (!qhShift || !isExtOf<arith::ExtUIOp>(qhShift.getLhs(), qh)) {
+    return false;
+  }
+  auto pos = qhShift.getRhs().getDefiningOp<arith::AndIOp>();
+  return pos && isKK(pos.getLhs()) && isConst(pos.getRhs(), 7);
+}
+
+bool isPackedQ5_0Generic(Operation *op) {
+  auto genericOp = dyn_cast<linalg::GenericOp>(op);
+  if (!genericOp) {
+    return false;
+  }
+
+  // Loops: m1, n1, m0, n0 parallel; k1, kk reductions.
+  using IT = utils::IteratorType;
+  SmallVector<IT> expectedIterTypes = {IT::parallel, IT::parallel, IT::parallel,
+                                       IT::parallel, IT::reduction,
+                                       IT::reduction};
+  if (genericOp.getIteratorTypesArray() != expectedIterTypes) {
+    return false;
+  }
+
+  // Operands: a, d, qh, qs in; out. All ranked tensors of rank 4.
+  if (genericOp.getNumDpsInputs() != 4 || genericOp.getNumDpsInits() != 1) {
+    return false;
+  }
+  SmallVector<RankedTensorType> types;
+  for (OpOperand &operand : genericOp->getOpOperands()) {
+    auto type = dyn_cast<RankedTensorType>(operand.get().getType());
+    if (!type || type.getRank() != 4) {
+      return false;
+    }
+    types.push_back(type);
+  }
+  RankedTensorType aType = types[0], dType = types[1], qhType = types[2],
+                   qsType = types[3], outType = types[4];
+
+  // Element types: f16 activations and scales, i8 bytes, f32 accumulator.
+  if (!aType.getElementType().isF16() || !dType.getElementType().isF16() ||
+      !qhType.getElementType().isSignlessInteger(8) ||
+      !qsType.getElementType().isSignlessInteger(8) ||
+      !outType.getElementType().isF32()) {
+    return false;
+  }
+
+  // Tile (inner) sizes: static, and K0 = 32*KB, qh has K0/8 bytes, qs K0/2.
+  for (RankedTensorType type : types) {
+    if (ShapedType::isDynamic(type.getDimSize(2)) ||
+        ShapedType::isDynamic(type.getDimSize(3))) {
+      return false;
+    }
+  }
+  int64_t k0 = aType.getDimSize(3);
+  if (k0 <= 0 || k0 % 32 != 0 || dType.getDimSize(3) != k0 / 32 ||
+      qhType.getDimSize(3) != k0 / 8 || qsType.getDimSize(3) != k0 / 2) {
+    return false;
+  }
+
+  // Indexing maps, exactly.
+  MLIRContext *ctx = genericOp.getContext();
+  AffineExpr d0, d1, d2, d3, d4, d5;
+  bindDims(ctx, d0, d1, d2, d3, d4, d5);
+  SmallVector<AffineMap> expectedMaps = {
+      AffineMap::get(6, 0, {d0, d4, d2, d5}, ctx),
+      AffineMap::get(6, 0, {d1, d4, d3, d5.floorDiv(32)}, ctx),
+      AffineMap::get(6, 0, {d1, d4, d3, d5.floorDiv(8)}, ctx),
+      AffineMap::get(6, 0, {d1, d4, d3, d5.floorDiv(32) * 16 + d5 % 16}, ctx),
+      AffineMap::get(6, 0, {d0, d1, d2, d3}, ctx),
+  };
+  if (genericOp.getIndexingMapsArray() != expectedMaps) {
+    return false;
+  }
+
+  return matchPackedQ5_0Body(*genericOp.getBlock());
 }
 
 } // namespace mlir::iree_compiler::IREE::Codegen

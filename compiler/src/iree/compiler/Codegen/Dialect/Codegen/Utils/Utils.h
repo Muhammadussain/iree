@@ -170,6 +170,15 @@ getDataTiledConvIterationSpace(MLIRContext *ctx, ArrayRef<int64_t> strides,
 /// indexing maps, and multiply-accumulate body).
 bool isDataTiledConvGeneric(Operation *op);
 
+/// Returns true if `op` is the packed (data-tiled) Q5_0 GEMM generic from the
+/// amdsharktank `mmt_block_scaled_q5_0_tiled` kernel, as it reaches CPU codegen.
+///   loops: d0=m1 d1=n1 d2=m0 d3=n0 d4=k1 d5=kk, kinds [P,P,P,P,R,R]
+///   a  [M1,K1,M0,K0] f16 (d0,d4,d2,d5)      d   [N1,K1,N0,KB]    f16 (d1,d4,d3,d5 floordiv 32)
+///   qh [N1,K1,N0,KB*4] i8 (d1,d4,d3,d5 floordiv 8)
+///   qs [N1,K1,N0,KB*16] i8 (d1,d4,d3,(d5 floordiv 32)*16 + d5 mod 16)
+///   out [M1,N1,M0,N0] f32 (d0,d1,d2,d3),   K0 = 32*KB
+bool isPackedQ5_0Generic(Operation *op);
+
 } // namespace mlir::iree_compiler::IREE::Codegen
 
 #endif // IREE_COMPILER_CODEGEN_DIALECT_CODEGEN_UTILS_H_
