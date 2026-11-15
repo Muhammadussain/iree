@@ -3198,6 +3198,25 @@ setConvDataTiledGenericRootConfig(mlir::FunctionOpInterface entryPointFn,
       getCPUTranslationInfo(convOp.getContext(),
                             CPUPipeline::DoubleTilingExpert, pipelineConfig));
 }
+/// Packed Q5_0 GEMM generic with its ukernel enabled: one (m1, n1) tile per
+/// workgroup; the inner tile (m0, n0) and the reductions (k1, kk) are left
+/// whole because the ukernel runs the K loops itself. Routed through
+/// Mmt4dTilingExpert because that pipeline runs CPULowerToUKernelsPass.
+/// Loops: (d0..d5) = (m1, n1, m0, n0, k1, kk).
+static LogicalResult
+setPackedQ5_0GenericRootConfig(mlir::FunctionOpInterface entryPointFn,
+                               linalg::GenericOp genericOp) {
+  SmallVector<int64_t> tileSizes = {1, 1, 0, 0, 0, 0};
+  LoweringConfigGenerator generator(genericOp);
+  generator.setDistributionTileSizes(tileSizes);
+  generator.setVectorTileSizes(tileSizes);
+  IREE::CPU::LoweringConfigAttr loweringConfig =
+      generator.generateCPULoweringConfig();
+  return setOpConfigAndEntryPointFnTranslation(
+      entryPointFn, genericOp, loweringConfig,
+      getCPUTranslationInfo(genericOp.getContext(),
+                            CPUPipeline::Mmt4dTilingExpert));
+}
 
 /// Redirects to methods that set the configuration based on operation type.
 static LogicalResult
@@ -3235,6 +3254,15 @@ setRootConfigImpl(mlir::FunctionOpInterface entryPointFn, Operation *op,
     if (IREE::Codegen::isDataTiledConvGeneric(op)) {
       return setConvDataTiledGenericRootConfig(entryPointFn,
                                                cast<linalg::GenericOp>(op));
+    }
+    if (IREE::Codegen::isPackedQ5_0Generic(op)) {
+      IREE::HAL::ExecutableTargetAttr targetAttr =
+          IREE::HAL::ExecutableTargetAttr::lookup(op);
+      if (targetAttr &&
+          hasUkernel(targetAttr.getConfiguration(), "q5_0_gemm")) {
+        return setPackedQ5_0GenericRootConfig(entryPointFn,
+                                              cast<linalg::GenericOp>(op));
+      }
     }
     if (linalg::isaContractionOpInterface(linalgOp) &&
         meetLegacyContractionOpInterface(linalgOp)) {

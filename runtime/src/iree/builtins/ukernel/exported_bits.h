@@ -122,5 +122,18 @@
 // info bit flags returned by iree_uk_conv_nchwc_info.
 #define IREE_UK_FLAG_CONV_NCHWC_INFO_HAVE_ARCHITECTURE_SPECIFIC_TILE_FUNCTION \
   0x1
+//===----------------------------------------------------------------------===//
+// q5_0_gemm
+//===----------------------------------------------------------------------===//
+
+// type enum (a = activations, d = block scales, qh/qs = Q5_0 bit planes,
+// out = accumulator)
+#define IREE_UK_FLAG_Q5_0_GEMM_TYPE_MASK 0xFF
+#define IREE_UK_FLAG_Q5_0_GEMM_TYPE_NONE 0x00
+#define IREE_UK_FLAG_Q5_0_GEMM_TYPE_F16F16I8I8F32 0x01
+#define IREE_UK_FLAG_Q5_0_GEMM_TYPE_END 0x02
+
+// bit flags
+#define IREE_UK_FLAG_Q5_0_GEMM_ACCUMULATE 0x100
 
 #endif  // IREE_BUILTINS_UKERNEL_EXPORTED_BITS_H_

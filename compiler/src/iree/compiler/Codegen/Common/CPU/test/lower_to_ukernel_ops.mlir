@@ -740,3 +740,105 @@ func.func @negative_conv_ukernel_non_conv_body(%input: tensor<1x1x16x16x16xf32>,
 // CHECK-LABEL: func @negative_conv_ukernel_non_conv_body(
 //  CHECK-NOT:   iree_uk_conv_nchwc
 //      CHECK:   linalg.generic
+
+
+// -----
+
+// Packed Q5_0 generic + ukernel enabled by name: replaced by a call to
+// iree_uk_q5_0_gemm. The packed operands are passed on unchanged.
+func.func @q5_0_gemm_lowered(%a: tensor<?x2x4x64xf16>, %d: tensor<8x2x8x2xf16>, %qh: tensor<8x2x8x8xi8>, %qs: tensor<8x2x8x32xi8>, %out: tensor<?x8x4x8xf32>) -> tensor<?x8x4x8xf32> attributes {
+  hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {ukernels = "q5_0_gemm", target_triple="x86_64-xyz-xyz", cpu_features="+avx512f"}>
+} {
+  %c1_i32 = arith.constant 1 : i32
+  %c4_i32 = arith.constant 4 : i32
+  %c7_i32 = arith.constant 7 : i32
+  %c15_i32 = arith.constant 15 : i32
+  %c16_i32 = arith.constant 16 : i32
+  %cst0 = arith.constant 0.000000e+00 : f32
+  %acc0 = linalg.fill ins(%cst0 : f32) outs(%out : tensor<?x8x4x8xf32>) -> tensor<?x8x4x8xf32>
+  %0 = linalg.generic {
+      indexing_maps = [affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d4, d2, d5)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d4, d3, d5 floordiv 32)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d4, d3, d5 floordiv 8)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d4, d3, (d5 floordiv 32) * 16 + d5 mod 16)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d1, d2, d3)>],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction", "reduction"]}
+      ins(%a, %d, %qh, %qs : tensor<?x2x4x64xf16>, tensor<8x2x8x2xf16>, tensor<8x2x8x8xi8>, tensor<8x2x8x32xi8>)
+      outs(%acc0 : tensor<?x8x4x8xf32>) {
+    ^bb0(%a_e: f16, %d_e: f16, %qh_e: i8, %qs_e: i8, %out_e: f32):
+      %idx = linalg.index 5 : index
+      %kk = arith.index_cast %idx : index to i32
+      %hsel = arith.shrui %kk, %c4_i32 : i32
+      %h = arith.andi %hsel, %c1_i32 : i32
+      %nib_shift = arith.muli %h, %c4_i32 : i32
+      %qs32 = arith.extui %qs_e : i8 to i32
+      %qs_sh = arith.shrui %qs32, %nib_shift : i32
+      %low4 = arith.andi %qs_sh, %c15_i32 : i32
+      %bit_pos = arith.andi %kk, %c7_i32 : i32
+      %qh32 = arith.extui %qh_e : i8 to i32
+      %qh_sh = arith.shrui %qh32, %bit_pos : i32
+      %hbit = arith.andi %qh_sh, %c1_i32 : i32
+      %hbit_up = arith.shli %hbit, %c4_i32 : i32
+      %q = arith.ori %low4, %hbit_up : i32
+      %qsg = arith.subi %q, %c16_i32 : i32
+      %qf = arith.sitofp %qsg : i32 to f32
+      %d32 = arith.extf %d_e : f16 to f32
+      %w = arith.mulf %qf, %d32 : f32
+      %a32 = arith.extf %a_e : f16 to f32
+      %prod = arith.mulf %a32, %w : f32
+      %acc = arith.addf %prod, %out_e : f32
+      linalg.yield %acc : f32
+  } -> tensor<?x8x4x8xf32>
+  return %0 : tensor<?x8x4x8xf32>
+}
+// CHECK-LABEL: func @q5_0_gemm_lowered(
+// CHECK-SAME:     %[[A:[a-zA-Z0-9]+]]: tensor<?x2x4x64xf16>
+// CHECK-SAME:     %[[D:[a-zA-Z0-9]+]]: tensor<8x2x8x2xf16>
+// CHECK-SAME:     %[[QH:[a-zA-Z0-9]+]]: tensor<8x2x8x8xi8>
+// CHECK-SAME:     %[[QS:[a-zA-Z0-9]+]]: tensor<8x2x8x32xi8>
+//      CHECK:   iree_codegen.ukernel.generic "iree_uk_q5_0_gemm"
+// CHECK-SAME:       ins(%[[A]], %[[D]], %[[QH]], %[[QS]] :
+//  CHECK-NOT:   linalg.generic
+
+// -----
+
+// A look-alike (dequantization offset 15 instead of 16) is rejected by the
+// matcher: the generic stays, even with all ukernels enabled.
+func.func @q5_0_gemm_look_alike_not_matched(%a: tensor<?x2x4x64xf16>, %d: tensor<8x2x8x2xf16>, %qh: tensor<8x2x8x8xi8>, %qs: tensor<8x2x8x32xi8>, %out: tensor<?x8x4x8xf32>) -> tensor<?x8x4x8xf32> attributes {
+  hal.executable.target = #hal.executable.target<"llvm-cpu", "xyz", {ukernels = "all", target_triple="x86_64-xyz-xyz", cpu_features="+avx512f"}>
+} {
+  %c1_i32 = arith.constant 1 : i32
+  %c4_i32 = arith.constant 4 : i32
+  %c7_i32 = arith.constant 7 : i32
+  %c15_i32 = arith.constant 15 : i32
+  %c16_i32 = arith.constant 15 : i32
+  %0 = linalg.generic {
+      indexing_maps = [affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d4, d2, d5)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d4, d3, d5 floordiv 32)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d4, d3, d5 floordiv 8)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d1, d4, d3, (d5 floordiv 32) * 16 + d5 mod 16)>, affine_map<(d0, d1, d2, d3, d4, d5) -> (d0, d1, d2, d3)>],
+      iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction", "reduction"]}
+      ins(%a, %d, %qh, %qs : tensor<?x2x4x64xf16>, tensor<8x2x8x2xf16>, tensor<8x2x8x8xi8>, tensor<8x2x8x32xi8>)
+      outs(%out : tensor<?x8x4x8xf32>) {
+    ^bb0(%a_e: f16, %d_e: f16, %qh_e: i8, %qs_e: i8, %out_e: f32):
+      %idx = linalg.index 5 : index
+      %kk = arith.index_cast %idx : index to i32
+      %hsel = arith.shrui %kk, %c4_i32 : i32
+      %h = arith.andi %hsel, %c1_i32 : i32
+      %nib_shift = arith.muli %h, %c4_i32 : i32
+      %qs32 = arith.extui %qs_e : i8 to i32
+      %qs_sh = arith.shrui %qs32, %nib_shift : i32
+      %low4 = arith.andi %qs_sh, %c15_i32 : i32
+      %bit_pos = arith.andi %kk, %c7_i32 : i32
+      %qh32 = arith.extui %qh_e : i8 to i32
+      %qh_sh = arith.shrui %qh32, %bit_pos : i32
+      %hbit = arith.andi %qh_sh, %c1_i32 : i32
+      %hbit_up = arith.shli %hbit, %c4_i32 : i32
+      %q = arith.ori %low4, %hbit_up : i32
+      %qsg = arith.subi %q, %c16_i32 : i32
+      %qf = arith.sitofp %qsg : i32 to f32
+      %d32 = arith.extf %d_e : f16 to f32
+      %w = arith.mulf %qf, %d32 : f32
+      %a32 = arith.extf %a_e : f16 to f32
+      %prod = arith.mulf %a32, %w : f32
+      %acc = arith.addf %prod, %out_e : f32
+      linalg.yield %acc : f32
+  } -> tensor<?x8x4x8xf32>
+  return %0 : tensor<?x8x4x8xf32>
+}
+// CHECK-LABEL: func @q5_0_gemm_look_alike_not_matched(
+//      CHECK:   linalg.generic
+//  CHECK-NOT:   iree_codegen.ukernel.generic

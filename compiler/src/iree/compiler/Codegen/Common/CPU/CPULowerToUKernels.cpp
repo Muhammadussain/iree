@@ -268,13 +268,70 @@ matchDAGForUKernel(RewriterBase &rewriter, linalg::Mmt4DOp op,
   return cast<IREE::Codegen::UKernelOpInterface>(
       genericMicroKernelOp.getOperation());
 }
+/// Matches the packed Q5_0 GEMM generic (IREE::Codegen::isPackedQ5_0Generic)
+/// and rewrites it to a call to iree_uk_q5_0_gemm.
+///   ins:  a [M1, K1, M0, K0] f16, d [N1, K1, N0, KB] f16,
+///         qh [N1, K1, N0, KB*4] i8, qs [N1, K1, N0, KB*16] i8
+///   outs: out [M1, N1, M0, N0] f32
+///   args: (M1, N1, K1, M0, N0, K0, flags)
+/// The packed operands are passed on unchanged. The ukernel always accumulates
+/// into `out` (a zero-filled accumulator simply stays zero-filled).
+static FailureOr<IREE::Codegen::UKernelOpInterface>
+matchDAGForQ5_0GemmUKernel(RewriterBase &rewriter, linalg::GenericOp op) {
+  auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(op);
+  const char ukernelName[] = "q5_0_gemm";
+  if (!targetAttr || !hasUkernel(targetAttr.getConfiguration(), ukernelName)) {
+    return failure();
+  }
+  if (!IREE::Codegen::isPackedQ5_0Generic(op)) {
+    return rewriter.notifyMatchFailure(op, "not a packed Q5_0 generic");
+  }
+  Value a = op.getDpsInputOperand(0)->get();
+  Value d = op.getDpsInputOperand(1)->get();
+  Value qh = op.getDpsInputOperand(2)->get();
+  Value qs = op.getDpsInputOperand(3)->get();
+  Value out = op.getDpsInitOperand(0)->get();
+  auto outType = cast<ShapedType>(out.getType());
+
+  uint32_t flags = IREE_UK_FLAG_Q5_0_GEMM_TYPE_F16F16I8I8F32 |
+                   IREE_UK_FLAG_Q5_0_GEMM_ACCUMULATE;
+
+  Location loc = op.getLoc();
+  Value m1 = tensor::DimOp::create(rewriter, loc, a, 0);
+  Value n1 = tensor::DimOp::create(rewriter, loc, d, 0);
+  Value k1 = tensor::DimOp::create(rewriter, loc, a, 1);
+  auto getDimAsI32 = [](RewriterBase &rewriter, Location loc, Value value,
+                        int dim) -> Value {
+    return arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getI32Type(),
+        tensor::DimOp::create(rewriter, loc, value, dim));
+  };
+  Value m0 = getDimAsI32(rewriter, loc, a, 2);
+  Value n0 = getDimAsI32(rewriter, loc, d, 2);
+  Value k0 = getDimAsI32(rewriter, loc, a, 3);
+  Value flagsVal = arith::ConstantOp::create(rewriter, loc,
+                                             rewriter.getI32IntegerAttr(flags));
+  auto fn = getFnNameAndDefAttrs(ukernelName, rewriter, targetAttr);
+  SmallVector<Type> returnTypes =
+      getUKernelGenericReturnTypes(targetAttr, outType);
+  auto genericMicroKernelOp = IREE::Codegen::UKernelGenericOp::create(
+      rewriter, loc, returnTypes, fn.name, ValueRange{a, d, qh, qs}, out,
+      ValueRange{m1, n1, k1, m0, n0, k0, flagsVal},
+      /*fn_def_attrs=*/rewriter.getDictionaryAttr(fn.defAttrs),
+      /*num_strided_outer_dims=*/1);
+  return cast<IREE::Codegen::UKernelOpInterface>(
+      genericMicroKernelOp.getOperation());
+}
 
 /// Matches a 9D data-tiled conv generic op and rewrites it to a call to
 /// iree_uk_conv_nchwc, that is later lowered into a call to the
-/// microkernel.
+/// microkernel
 static FailureOr<IREE::Codegen::UKernelOpInterface>
 matchDAGForUKernel(RewriterBase &rewriter, linalg::GenericOp op,
                    bool /*skipIntermediateRoundings*/) {
+   if (IREE::Codegen::isPackedQ5_0Generic(op)) {
+    return matchDAGForQ5_0GemmUKernel(rewriter, op);
+  }
   auto targetAttr = IREE::HAL::ExecutableTargetAttr::lookup(op);
   const char ukernelName[] = "conv_nchwc";
   if (!targetAttr || !hasUkernel(targetAttr.getConfiguration(), ukernelName)) {
